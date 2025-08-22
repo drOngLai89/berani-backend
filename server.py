@@ -1,111 +1,110 @@
-import os
+import os, textwrap
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
 
-# Optional: use OpenAI if key present; otherwise fall back to a template generator
-USE_OPENAI = bool(os.getenv("OPENAI_API_KEY"))
-if USE_OPENAI:
-    from openai import OpenAI
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+# OpenAI client (optional)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+client = None
+if OPENAI_API_KEY:
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    except Exception:
+        client = None  # if lib missing or bad key, we'll fall back
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # safe for mobile; adjust if you later add a web app
 
-def template_report(category, dateISO, timeISO, locationText, description):
-    dt = datetime.fromisoformat(dateISO.replace('Z', '+00:00'))
-    tt = datetime.fromisoformat(timeISO.replace('Z', '+00:00'))
-    date_str = dt.strftime('%A, %d %B %Y')
-    time_str = tt.strftime('%I:%M %p')
-    loc = locationText.strip() or '(Location not provided)'
-    body = f"""Incident Report — {category}
-
-Date: {date_str}
-Time: {time_str}
-Location: {loc}
-
-Summary:
-{description.strip()}
-
-Observed Facts:
-- Incident categorized as {category}.
-- Occurred on {date_str} at approximately {time_str}.
-- Location reported as: {loc}.
-- Attached evidence: (see photos if provided in the app).
-
-Impact & Next Steps:
-- Recommend speaking with relevant authorities/teachers or counselors.
-- Suggest preserving any additional evidence (messages, screenshots, witness statements).
-- Consider follow-up within 48 hours to ensure safety and resolution.
-"""
-    return body
-
-@app.route('/generate_report', methods=['POST'])
-def generate_report():
-    data = request.get_json(force=True)
-    category = data.get('category', 'Bullying')
-    dateISO = data.get('dateISO')
-    timeISO = data.get('timeISO')
-    locationText = data.get('locationText', '')
-    description = data.get('description', '')
-
-    if not dateISO or not timeISO or not description:
-        return jsonify(error='Missing fields: dateISO, timeISO, description are required'), 400
-
-    if USE_OPENAI:
-        prompt = f"""
-You are a school safeguarding officer. Write a concise, professional incident report for administration.
-Inputs:
-- Category: {category}
-- Date: {dateISO}
-- Time: {timeISO}
-- Location: {locationText}
-- Description: {description}
-
-Requirements:
-- Neutral, factual tone.
-- Structure with headings: Incident Overview, Timeline, Location, Details, Evidence (if any), Recommended Actions.
-- No speculation; only facts and reasonable recommendations.
-"""
-        try:
-            completion = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role":"user","content":prompt}],
-                temperature=0.2
-            )
-            text = completion.choices[0].message.content.strip()
-            return jsonify(report=text)
-        except Exception as e:
-            # Fall back to template on any API error
-            return jsonify(report=template_report(category, dateISO, timeISO, locationText, description))
-    else:
-        return jsonify(report=template_report(category, dateISO, timeISO, locationText, description))
-
-@app.route('/assistant', methods=['POST'])
-def assistant():
-    data = request.get_json(force=True)
-    q = data.get('question', '').strip()
-    if not q:
-        return jsonify(error='Missing question'), 400
-
-    if USE_OPENAI:
-        try:
-            completion = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role":"system","content":"You are Berani Assistant. Keep answers brief, practical, and safe."},
-                          {"role":"user","content":q}],
-                temperature=0.3
-            )
-            text = completion.choices[0].message.content.strip()
-            return jsonify(answer=text)
-        except Exception:
-            pass
-
-    # Fallback canned helper
-    answer = ("Keep reports factual and specific. Capture names (or descriptions), exact time/date, location, and what was said/done. "
-              "Attach clear evidence (photos/screenshots). Use respectful language and avoid speculation.")
-    return jsonify(answer=answer)
-
-@app.route('/')
+@app.get("/")
 def root():
-    return jsonify(ok=True)
+    return jsonify({"ok": True, "service": "berani-backend", "version": "1.1.0"})
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "healthy"})
+
+def _ai_fallback_answer(q: str) -> str:
+    # Short, supportive fallback if OpenAI unavailable
+    return (
+        "I’m sorry this happened. Here are immediate steps you can take:\n"
+        "• If you’re in danger, move to a safe place and contact local authorities.\n"
+        "• Seek medical attention if you’re hurt.\n"
+        "• Write down what happened (who/what/when/where) and save any evidence.\n"
+        "• Talk to a trusted adult or counselor.\n"
+        "• Use the New Report tab to record details; attach photos if appropriate.\n"
+        "When you’re ready, I can help you draft a clear, respectful incident report."
+    )
+
+def _ai_fallback_report(payload: dict) -> str:
+    return textwrap.dedent(f"""
+    Incident Report (Draft)
+    -----------------------
+    Category: {payload.get('category') or '-'}
+    Date:     {payload.get('dateISO') or '-'}
+    Time:     {payload.get('timeISO') or '-'}
+    Location: {payload.get('locationText') or '-'}
+
+    Description:
+    {payload.get('description') or '-'}
+
+    Notes:
+    • Keep language factual and neutral.
+    • If any detail is approximate, say so (e.g., “about 11:40 AM”).
+    • Attach photos or other evidence where safe and appropriate.
+    """).strip()
+
+@app.post("/assistant")
+def assistant():
+    data = request.get_json(force=True) or {}
+    q = (data.get("question") or "").strip()
+    if not q:
+        return jsonify({"answer": "Please enter a question."})
+
+    # If no OpenAI, return fallback immediately
+    if not client:
+        return jsonify({"answer": _ai_fallback_answer(q)})
+
+    # Try OpenAI with hard timeout; if it fails, send fallback
+    try:
+        # New OpenAI Python SDK (v1.x): responses API with a per-request timeout
+        resp = client.responses.with_options(timeout=10).create(
+            model="gpt-4o-mini",
+            input=f"You are a supportive, non-judgmental safety assistant. "
+                  f"Be concise, avoid stereotypes, and give practical steps. Question: {q}"
+        )
+        answer = resp.output_text or _ai_fallback_answer(q)
+        return jsonify({"answer": answer})
+    except Exception as e:
+        # Don’t 500 the app — return a helpful fallback
+        msg = _ai_fallback_answer(q) + "\n\n(Note: AI had an issue; fallback shown.)"
+        return jsonify({"answer": msg})
+
+@app.post("/generate_report")
+def generate_report():
+    payload = request.get_json(force=True) or {}
+
+    # If no OpenAI, return a structured draft so the app doesn’t hang
+    if not client:
+        return jsonify({"report": _ai_fallback_report(payload)})
+
+    prompt = textwrap.dedent(f"""
+    Draft a clear, neutral incident report using these details.
+    Include: who/what/when/where, impact, and next steps (if appropriate).
+    Avoid stereotypes or assumptions.
+
+    Category: {payload.get('category')}
+    Date ISO: {payload.get('dateISO')}
+    Time ISO: {payload.get('timeISO')}
+    Location: {payload.get('locationText')}
+    Description: {payload.get('description')}
+    """).strip()
+
+    try:
+        resp = client.responses.with_options(timeout=12).create(
+            model="gpt-4o-mini",
+            input=prompt
+        )
+        text = resp.output_text or _ai_fallback_report(payload)
+        return jsonify({"report": text})
+    except Exception:
+        return jsonify({"report": _ai_fallback_report(payload)})
