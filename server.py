@@ -2,15 +2,10 @@ import os, textwrap, logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# --------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------
 DEBUG_FLAG = os.environ.get("DEBUG", "").lower() in {"1","true","yes","on"}
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
-# --------------------------------------------------------------------
-# OpenAI client (optional). If not ready, we fall back safely.
-# --------------------------------------------------------------------
+# OpenAI client (optional)
 client = None
 openai_lib = None
 openai_error = None
@@ -23,14 +18,11 @@ if OPENAI_API_KEY:
         client = None
         openai_error = f"{type(e).__name__}: {e}"
 
-# --------------------------------------------------------------------
-# Flask app
-# --------------------------------------------------------------------
 app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 @app.get("/")
 def root():
@@ -53,11 +45,11 @@ def diag():
 
 @app.get("/diag_openai")
 def diag_openai():
-    """Quick live test against the OpenAI endpoint with a hard timeout."""
     if not client:
         return jsonify({"ok": False, "why": "no_client", "error": openai_error})
     try:
-        resp = client.responses.with_options(timeout=8).create(
+        # NOTE: with_options is on the client
+        resp = client.with_options(timeout=8).responses.create(
             model="gpt-4o-mini",
             input="Reply with the single word: OK"
         )
@@ -107,7 +99,7 @@ def assistant():
         return jsonify({"answer": _fallback_answer(q), "meta": {"fallback": True, "reason": "no_client"}})
 
     try:
-        resp = client.responses.with_options(timeout=10).create(
+        resp = client.with_options(timeout=10).responses.create(
             model="gpt-4o-mini",
             input=(
                 "You are a supportive, non-judgmental safety assistant. "
@@ -144,7 +136,7 @@ def generate_report():
     """).strip()
 
     try:
-        resp = client.responses.with_options(timeout=12).create(
+        resp = client.with_options(timeout=12).responses.create(
             model="gpt-4o-mini",
             input=prompt
         )
@@ -156,5 +148,5 @@ def generate_report():
         if DEBUG_FLAG: meta["error"] = f"{type(e).__name__}: {e}"
         return jsonify({"report": _fallback_report(payload), "meta": meta})
 
-# Start on Render with:
+# Start on Render:
 # gunicorn server:app -b 0.0.0.0:$PORT
