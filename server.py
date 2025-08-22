@@ -22,7 +22,7 @@ app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 @app.get("/")
 def root():
@@ -48,7 +48,7 @@ def diag_openai():
     if not client:
         return jsonify({"ok": False, "why": "no_client", "error": openai_error})
     try:
-        # NOTE: with_options is on the client
+        # ✅ with_options is on the CLIENT
         resp = client.with_options(timeout=8).responses.create(
             model="gpt-4o-mini",
             input="Reply with the single word: OK"
