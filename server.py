@@ -2,10 +2,15 @@ import os, textwrap, logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# -----------------------------------------------------------------------------
-# OpenAI client (optional). If not available or key is bad, we fall back safely.
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------
+DEBUG_FLAG = os.environ.get("DEBUG", "").lower() in {"1","true","yes","on"}
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+
+# --------------------------------------------------------------------
+# OpenAI client (optional). If not ready, we fall back safely.
+# --------------------------------------------------------------------
 client = None
 openai_lib = None
 openai_error = None
@@ -18,16 +23,18 @@ if OPENAI_API_KEY:
         client = None
         openai_error = f"{type(e).__name__}: {e}"
 
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------
 # Flask app
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app)  # Native apps don't need CORS, but harmless here.
+CORS(app)
 logging.basicConfig(level=logging.INFO)
+
+VERSION = "1.3.0"
 
 @app.get("/")
 def root():
-    return jsonify({"ok": True, "service": "berani-backend", "version": "1.2.0"})
+    return jsonify({"ok": True, "service": "berani-backend", "version": VERSION})
 
 @app.get("/health")
 def health():
@@ -35,14 +42,29 @@ def health():
 
 @app.get("/diag")
 def diag():
-    """Quick diagnostics: shows whether OpenAI is configured."""
     return jsonify({
         "ok": True,
         "has_env_key": bool(OPENAI_API_KEY),
         "client_ready": bool(client),
         "openai_lib": openai_lib,
         "openai_error": openai_error,
+        "version": VERSION,
     })
+
+@app.get("/diag_openai")
+def diag_openai():
+    """Quick live test against the OpenAI endpoint with a hard timeout."""
+    if not client:
+        return jsonify({"ok": False, "why": "no_client", "error": openai_error})
+    try:
+        resp = client.responses.with_options(timeout=8).create(
+            model="gpt-4o-mini",
+            input="Reply with the single word: OK"
+        )
+        text = (resp.output_text or "").strip()
+        return jsonify({"ok": True, "model": "gpt-4o-mini", "text": text[:100]})
+    except Exception as e:
+        return jsonify({"ok": False, "why": "openai_error", "error": f"{type(e).__name__}: {e}"})
 
 def _fallback_answer(_: str) -> str:
     return (
@@ -81,12 +103,10 @@ def assistant():
     if not q:
         return jsonify({"answer": "Please enter a question."})
 
-    # No OpenAI → return fallback immediately
     if not client:
-        return jsonify({"answer": _fallback_answer(q)})
+        return jsonify({"answer": _fallback_answer(q), "meta": {"fallback": True, "reason": "no_client"}})
 
     try:
-        # hard timeout so Render never hangs
         resp = client.responses.with_options(timeout=10).create(
             model="gpt-4o-mini",
             input=(
@@ -99,15 +119,18 @@ def assistant():
         return jsonify({"answer": answer})
     except Exception as e:
         app.logger.exception("assistant error: %s", e)
+        meta = {"fallback": True}
+        if DEBUG_FLAG: meta["error"] = f"{type(e).__name__}: {e}"
         msg = _fallback_answer(q) + "\n\n(Note: AI had an issue; fallback shown.)"
-        return jsonify({"answer": msg})
+        return jsonify({"answer": msg, "meta": meta})
 
 @app.post("/generate_report")
 def generate_report():
     payload = request.get_json(force=True) or {}
     app.logger.info("POST /generate_report keys=%s", list(payload.keys()))
+
     if not client:
-        return jsonify({"report": _fallback_report(payload)})
+        return jsonify({"report": _fallback_report(payload), "meta": {"fallback": True, "reason": "no_client"}})
 
     prompt = textwrap.dedent(f"""
     Draft a clear, neutral incident report. Include who/what/when/where, impact,
@@ -129,6 +152,9 @@ def generate_report():
         return jsonify({"report": text})
     except Exception as e:
         app.logger.exception("generate_report error: %s", e)
-        return jsonify({"report": _fallback_report(payload)})
+        meta = {"fallback": True}
+        if DEBUG_FLAG: meta["error"] = f"{type(e).__name__}: {e}"
+        return jsonify({"report": _fallback_report(payload), "meta": meta})
 
-# Render start: gunicorn server:app -b 0.0.0.0:$PORT
+# Start on Render with:
+# gunicorn server:app -b 0.0.0.0:$PORT
