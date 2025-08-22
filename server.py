@@ -1,30 +1,50 @@
-import os, textwrap
+import os, textwrap, logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# OpenAI client (optional)
+# -----------------------------------------------------------------------------
+# OpenAI client (optional). If not available or key is bad, we fall back safely.
+# -----------------------------------------------------------------------------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 client = None
+openai_lib = None
+openai_error = None
 if OPENAI_API_KEY:
     try:
         from openai import OpenAI
         client = OpenAI(api_key=OPENAI_API_KEY)
-    except Exception:
-        client = None  # if lib missing or bad key, we'll fall back
+        openai_lib = "openai>=1.30 (responses API)"
+    except Exception as e:
+        client = None
+        openai_error = f"{type(e).__name__}: {e}"
 
+# -----------------------------------------------------------------------------
+# Flask app
+# -----------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app)  # safe for mobile; adjust if you later add a web app
+CORS(app)  # Native apps don't need CORS, but harmless here.
+logging.basicConfig(level=logging.INFO)
 
 @app.get("/")
 def root():
-    return jsonify({"ok": True, "service": "berani-backend", "version": "1.1.0"})
+    return jsonify({"ok": True, "service": "berani-backend", "version": "1.2.0"})
 
 @app.get("/health")
 def health():
     return jsonify({"status": "healthy"})
 
-def _ai_fallback_answer(q: str) -> str:
-    # Short, supportive fallback if OpenAI unavailable
+@app.get("/diag")
+def diag():
+    """Quick diagnostics: shows whether OpenAI is configured."""
+    return jsonify({
+        "ok": True,
+        "has_env_key": bool(OPENAI_API_KEY),
+        "client_ready": bool(client),
+        "openai_lib": openai_lib,
+        "openai_error": openai_error,
+    })
+
+def _fallback_answer(_: str) -> str:
     return (
         "I’m sorry this happened. Here are immediate steps you can take:\n"
         "• If you’re in danger, move to a safe place and contact local authorities.\n"
@@ -35,7 +55,7 @@ def _ai_fallback_answer(q: str) -> str:
         "When you’re ready, I can help you draft a clear, respectful incident report."
     )
 
-def _ai_fallback_report(payload: dict) -> str:
+def _fallback_report(payload: dict) -> str:
     return textwrap.dedent(f"""
     Incident Report (Draft)
     -----------------------
@@ -57,40 +77,41 @@ def _ai_fallback_report(payload: dict) -> str:
 def assistant():
     data = request.get_json(force=True) or {}
     q = (data.get("question") or "").strip()
+    app.logger.info("POST /assistant q=%r", q[:80])
     if not q:
         return jsonify({"answer": "Please enter a question."})
 
-    # If no OpenAI, return fallback immediately
+    # No OpenAI → return fallback immediately
     if not client:
-        return jsonify({"answer": _ai_fallback_answer(q)})
+        return jsonify({"answer": _fallback_answer(q)})
 
-    # Try OpenAI with hard timeout; if it fails, send fallback
     try:
-        # New OpenAI Python SDK (v1.x): responses API with a per-request timeout
+        # hard timeout so Render never hangs
         resp = client.responses.with_options(timeout=10).create(
             model="gpt-4o-mini",
-            input=f"You are a supportive, non-judgmental safety assistant. "
-                  f"Be concise, avoid stereotypes, and give practical steps. Question: {q}"
+            input=(
+                "You are a supportive, non-judgmental safety assistant. "
+                "Be concise, avoid stereotypes, and give practical steps.\n\n"
+                f"Question: {q}"
+            ),
         )
-        answer = resp.output_text or _ai_fallback_answer(q)
+        answer = resp.output_text or _fallback_answer(q)
         return jsonify({"answer": answer})
     except Exception as e:
-        # Don’t 500 the app — return a helpful fallback
-        msg = _ai_fallback_answer(q) + "\n\n(Note: AI had an issue; fallback shown.)"
+        app.logger.exception("assistant error: %s", e)
+        msg = _fallback_answer(q) + "\n\n(Note: AI had an issue; fallback shown.)"
         return jsonify({"answer": msg})
 
 @app.post("/generate_report")
 def generate_report():
     payload = request.get_json(force=True) or {}
-
-    # If no OpenAI, return a structured draft so the app doesn’t hang
+    app.logger.info("POST /generate_report keys=%s", list(payload.keys()))
     if not client:
-        return jsonify({"report": _ai_fallback_report(payload)})
+        return jsonify({"report": _fallback_report(payload)})
 
     prompt = textwrap.dedent(f"""
-    Draft a clear, neutral incident report using these details.
-    Include: who/what/when/where, impact, and next steps (if appropriate).
-    Avoid stereotypes or assumptions.
+    Draft a clear, neutral incident report. Include who/what/when/where, impact,
+    and (if appropriate) next steps. Avoid stereotypes or assumptions.
 
     Category: {payload.get('category')}
     Date ISO: {payload.get('dateISO')}
@@ -104,7 +125,10 @@ def generate_report():
             model="gpt-4o-mini",
             input=prompt
         )
-        text = resp.output_text or _ai_fallback_report(payload)
+        text = resp.output_text or _fallback_report(payload)
         return jsonify({"report": text})
-    except Exception:
-        return jsonify({"report": _ai_fallback_report(payload)})
+    except Exception as e:
+        app.logger.exception("generate_report error: %s", e)
+        return jsonify({"report": _fallback_report(payload)})
+
+# Render start: gunicorn server:app -b 0.0.0.0:$PORT
