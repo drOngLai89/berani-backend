@@ -1,152 +1,108 @@
-import os, textwrap, logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import os
 
-DEBUG_FLAG = os.environ.get("DEBUG", "").lower() in {"1","true","yes","on"}
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-
-# OpenAI client (optional)
-client = None
-openai_lib = None
-openai_error = None
-if OPENAI_API_KEY:
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        openai_lib = "openai>=1.30 (responses API)"
-    except Exception as e:
-        client = None
-        openai_error = f"{type(e).__name__}: {e}"
+# Try to import OpenAI; if not configured, we will return a stub
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
 app = Flask(__name__)
 CORS(app)
-logging.basicConfig(level=logging.INFO)
 
-VERSION = "1.3.2"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY) if (OpenAI and OPENAI_API_KEY) else None
 
 @app.get("/")
-def root():
-    return jsonify({"ok": True, "service": "berani-backend", "version": VERSION})
-
-@app.get("/health")
 def health():
-    return jsonify({"status": "healthy"})
+    routes = sorted({r.rule for r in app.url_map.iter_rules() if "static" not in r.rule})
+    return jsonify({"ok": True, "routes": routes})
 
-@app.get("/diag")
-def diag():
-    return jsonify({
-        "ok": True,
-        "has_env_key": bool(OPENAI_API_KEY),
-        "client_ready": bool(client),
-        "openai_lib": openai_lib,
-        "openai_error": openai_error,
-        "version": VERSION,
-    })
+# -------- REPORT handler (shared by all report-like paths) --------
+def report_handler():
+    data = request.get_json(silent=True) or {}
+    category     = data.get("category") or "N/A"
+    dateISO      = data.get("dateISO") or "N/A"
+    timeISO      = data.get("timeISO") or "N/A"
+    locationText = data.get("locationText") or "N/A"
+    description  = data.get("description")  or ""
 
-@app.get("/diag_openai")
-def diag_openai():
-    if not client:
-        return jsonify({"ok": False, "why": "no_client", "error": openai_error})
-    try:
-        # ✅ with_options is on the CLIENT
-        resp = client.with_options(timeout=8).responses.create(
-            model="gpt-4o-mini",
-            input="Reply with the single word: OK"
+    # If no OpenAI key, return a friendly stub (so mobile UX never breaks)
+    if client is None:
+        text = (
+            "### Description of the Incident:\n"
+            f"{description or 'No description provided.'}\n\n"
+            "### Impact:\nStill gathering details.\n\n"
+            "### Next Steps:\nKeep evidence safely. In danger? Call 999 (Malaysia)."
         )
-        text = (resp.output_text or "").strip()
-        return jsonify({"ok": True, "model": "gpt-4o-mini", "text": text[:100]})
-    except Exception as e:
-        return jsonify({"ok": False, "why": "openai_error", "error": f"{type(e).__name__}: {e}"})
+        return jsonify({"report": text})
 
-def _fallback_answer(_: str) -> str:
-    return (
-        "I’m sorry this happened. Here are immediate steps you can take:\n"
-        "• If you’re in danger, move to a safe place and contact local authorities.\n"
-        "• Seek medical attention if you’re hurt.\n"
-        "• Write down what happened (who/what/when/where) and save any evidence.\n"
-        "• Talk to a trusted adult or counselor.\n"
-        "• Use the New Report tab to record details; attach photos if appropriate.\n"
-        "When you’re ready, I can help you draft a clear, respectful incident report."
-    )
+    prompt = f"""
+Write a clear, empathetic incident report for an app called Berani.
 
-def _fallback_report(payload: dict) -> str:
-    return textwrap.dedent(f"""
-    Incident Report (Draft)
-    -----------------------
-    Category: {payload.get('category') or '-'}
-    Date:     {payload.get('dateISO') or '-'}
-    Time:     {payload.get('timeISO') or '-'}
-    Location: {payload.get('locationText') or '-'}
+Context:
+- Category: {category}
+- Date: {dateISO}
+- Time: {timeISO}
+- Location: {locationText}
 
-    Description:
-    {payload.get('description') or '-'}
+User description:
+{description}
 
-    Notes:
-    • Keep language factual and neutral.
-    • If any detail is approximate, say so (e.g., “about 11:40 AM”).
-    • Attach photos or other evidence where safe and appropriate.
-    """).strip()
-
-@app.post("/assistant")
-def assistant():
-    data = request.get_json(force=True) or {}
-    q = (data.get("question") or "").strip()
-    app.logger.info("POST /assistant q=%r", q[:80])
-    if not q:
-        return jsonify({"answer": "Please enter a question."})
-
-    if not client:
-        return jsonify({"answer": _fallback_answer(q), "meta": {"fallback": True, "reason": "no_client"}})
+Requirements:
+- Headings: Description of the Incident, Impact, Next Steps.
+- Supportive tone, simple language, no PII, under 220 words.
+""".strip()
 
     try:
-        resp = client.with_options(timeout=10).responses.create(
+        resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            input=(
-                "You are a supportive, non-judgmental safety assistant. "
-                "Be concise, avoid stereotypes, and give practical steps.\n\n"
-                f"Question: {q}"
-            ),
+            messages=[{"role":"user","content":prompt}]
         )
-        answer = resp.output_text or _fallback_answer(q)
-        return jsonify({"answer": answer})
-    except Exception as e:
-        app.logger.exception("assistant error: %s", e)
-        meta = {"fallback": True}
-        if DEBUG_FLAG: meta["error"] = f"{type(e).__name__}: {e}"
-        msg = _fallback_answer(q) + "\n\n(Note: AI had an issue; fallback shown.)"
-        return jsonify({"answer": msg, "meta": meta})
-
-@app.post("/generate_report")
-def generate_report():
-    payload = request.get_json(force=True) or {}
-    app.logger.info("POST /generate_report keys=%s", list(payload.keys()))
-
-    if not client:
-        return jsonify({"report": _fallback_report(payload), "meta": {"fallback": True, "reason": "no_client"}})
-
-    prompt = textwrap.dedent(f"""
-    Draft a clear, neutral incident report. Include who/what/when/where, impact,
-    and (if appropriate) next steps. Avoid stereotypes or assumptions.
-
-    Category: {payload.get('category')}
-    Date ISO: {payload.get('dateISO')}
-    Time ISO: {payload.get('timeISO')}
-    Location: {payload.get('locationText')}
-    Description: {payload.get('description')}
-    """).strip()
-
-    try:
-        resp = client.with_options(timeout=12).responses.create(
-            model="gpt-4o-mini",
-            input=prompt
-        )
-        text = resp.output_text or _fallback_report(payload)
+        text = resp.choices[0].message.content.strip()
         return jsonify({"report": text})
     except Exception as e:
-        app.logger.exception("generate_report error: %s", e)
-        meta = {"fallback": True}
-        if DEBUG_FLAG: meta["error"] = f"{type(e).__name__}: {e}"
-        return jsonify({"report": _fallback_report(payload), "meta": meta})
+        print("report error:", e)
+        return jsonify({"error":"report_failed"}), 500
 
-# Start on Render:
-# gunicorn server:app -b 0.0.0.0:$PORT
+# Register every report alias your app might try
+for path in ("/report", "/api/report", "/v1/report", "/generate", "/api/generate"):
+    ep = "report_" + path.strip("/").replace("/", "_")
+    app.add_url_rule(path, endpoint=ep, view_func=report_handler, methods=["POST", "OPTIONS"])
+
+# -------- CHAT handler (shared by all chat-like paths) --------
+def chat_handler():
+    data = request.get_json(silent=True) or {}
+    messages = data.get("messages") or []
+    system = data.get("system") or (
+        "You are a compassionate counsellor for users in Malaysia. Ensure safety first: "
+        "if risk of harm, advise calling 999 immediately. Provide practical next steps and local resources: "
+        "Talian Kasih 15999 (WhatsApp 019-2615999), Befrienders 03-7627 2929, WAO +603-7956 3488 / WhatsApp +6018-988 8058. "
+        "Avoid diagnosis; be brief, clear, and supportive."
+    )
+
+    if client is None:
+        return jsonify({"reply":
+            "I'm here with you. If you’re in danger call 999. "
+            "24/7 help: Talian Kasih 15999 (WhatsApp 019-2615999), "
+            "Befrienders 03-7627 2929, WAO +603-7956 3488."
+        })
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"system","content":system}] + [
+                {"role": m.get("role","user"), "content": m.get("content","")} for m in messages
+            ]
+        )
+        reply = resp.choices[0].message.content.strip()
+        return jsonify({"reply": reply})
+    except Exception as e:
+        print("chat error:", e)
+        return jsonify({"error":"chat_failed"}), 500
+
+# Register every chat alias your app might try
+for path in ("/chat", "/api/chat", "/v1/chat", "/messages", "/api/messages", "/respond"):
+    ep = "chat_" + path.strip("/").replace("/", "_")
+    app.add_url_rule(path, endpoint=ep, view_func=chat_handler, methods=["POST", "OPTIONS"])
