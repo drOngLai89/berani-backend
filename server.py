@@ -1,8 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-
-# Try to import OpenAI; if not configured, we will return a stub
 try:
     from openai import OpenAI
 except Exception:
@@ -19,27 +17,19 @@ def health():
     routes = sorted({r.rule for r in app.url_map.iter_rules() if "static" not in r.rule})
     return jsonify({"ok": True, "routes": routes})
 
-# -------- REPORT handler (shared by all report-like paths) --------
 def report_handler():
     data = request.get_json(silent=True) or {}
-    category     = data.get("category") or "N/A"
-    dateISO      = data.get("dateISO") or "N/A"
-    timeISO      = data.get("timeISO") or "N/A"
+    category = data.get("category") or "N/A"
+    dateISO = data.get("dateISO") or "N/A"
+    timeISO = data.get("timeISO") or "N/A"
     locationText = data.get("locationText") or "N/A"
-    description  = data.get("description")  or ""
-
-    # If no OpenAI key, return a friendly stub (so mobile UX never breaks)
+    description = data.get("description") or ""
     if client is None:
-        text = (
-            "### Description of the Incident:\n"
-            f"{description or 'No description provided.'}\n\n"
-            "### Impact:\nStill gathering details.\n\n"
-            "### Next Steps:\nKeep evidence safely. In danger? Call 999 (Malaysia)."
-        )
+        text = "### Description of the Incident:\n" + (description or "No description provided.") + \
+               "\n\n### Impact:\nStill gathering details.\n\n### Next Steps:\nKeep evidence safely. In danger? Call 999 (Malaysia)."
         return jsonify({"report": text})
-
-    prompt = f"""
-Write a clear, empathetic incident report for an app called Berani.
+    try:
+        prompt = f"""Write a clear, empathetic incident report for an app called Berani.
 
 Context:
 - Category: {category}
@@ -52,26 +42,18 @@ User description:
 
 Requirements:
 - Headings: Description of the Incident, Impact, Next Steps.
-- Supportive tone, simple language, no PII, under 220 words.
-""".strip()
-
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}]
-        )
+- Supportive tone, simple language, no PII, under 220 words."""
+        resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}])
         text = resp.choices[0].message.content.strip()
         return jsonify({"report": text})
     except Exception as e:
         print("report error:", e)
         return jsonify({"error":"report_failed"}), 500
 
-# Register every report alias your app might try
 for path in ("/report", "/api/report", "/v1/report", "/generate", "/api/generate"):
     ep = "report_" + path.strip("/").replace("/", "_")
     app.add_url_rule(path, endpoint=ep, view_func=report_handler, methods=["POST", "OPTIONS"])
 
-# -------- CHAT handler (shared by all chat-like paths) --------
 def chat_handler():
     data = request.get_json(silent=True) or {}
     messages = data.get("messages") or []
@@ -81,28 +63,16 @@ def chat_handler():
         "Talian Kasih 15999 (WhatsApp 019-2615999), Befrienders 03-7627 2929, WAO +603-7956 3488 / WhatsApp +6018-988 8058. "
         "Avoid diagnosis; be brief, clear, and supportive."
     )
-
     if client is None:
-        return jsonify({"reply":
-            "I'm here with you. If you’re in danger call 999. "
-            "24/7 help: Talian Kasih 15999 (WhatsApp 019-2615999), "
-            "Befrienders 03-7627 2929, WAO +603-7956 3488."
-        })
-
+        return jsonify({"reply": "I'm here with you. If you’re in danger call 999. 24/7 help: Talian Kasih 15999 (WhatsApp 019-2615999), Befrienders 03-7627 2929, WAO +603-7956 3488."})
     try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"system","content":system}] + [
-                {"role": m.get("role","user"), "content": m.get("content","")} for m in messages
-            ]
-        )
+        resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":system}] + [{"role":m.get("role","user"),"content":m.get("content","")} for m in messages])
         reply = resp.choices[0].message.content.strip()
         return jsonify({"reply": reply})
     except Exception as e:
         print("chat error:", e)
         return jsonify({"error":"chat_failed"}), 500
 
-# Register every chat alias your app might try
 for path in ("/chat", "/api/chat", "/v1/chat", "/messages", "/api/messages", "/respond"):
     ep = "chat_" + path.strip("/").replace("/", "_")
     app.add_url_rule(path, endpoint=ep, view_func=chat_handler, methods=["POST", "OPTIONS"])
