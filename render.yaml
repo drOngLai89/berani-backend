@@ -2,14 +2,11 @@ services:
   - type: web
     name: berani-backend
     env: python
-    region: singapore
     plan: free
+    repo: https://github.com/drOngLai89/berani-backend
+    branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app -b 0.0.0.0:10000
+    startCommand: gunicorn server:app -b 0.0.0.0:$PORT
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
-      - key: PORT
-        value: 10000
       - key: OPENAI_API_KEY
         sync: false
