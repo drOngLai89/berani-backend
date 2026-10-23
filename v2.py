@@ -162,21 +162,78 @@ def analyse():
 
 
 # ---------------------------------------------------------------- counsellor
-COUNSELLOR_PROMPT = """You are Berani Counsellor, a warm, calm support companion in a Malaysian anti bullying app, mostly used by teenagers.
+TALIAN_KASIH = "Talian Kasih 15999 (call, 24 hours) or WhatsApp 019-261 5999"
+BEFRIENDERS = "Befrienders 03-7627 2929 (24 hours)"
+OSCC = "the emergency department of the nearest government hospital, and ask for the One Stop Crisis Centre (OSCC)"
+TRIBUNAL = "Tribunal for Anti-bully (free and private): tab.bheuu.gov.my or 03-2271 1000"
 
-How you help:
-- Listen first. Reflect feelings briefly. Keep replies short: 3 to 6 short sentences or a few bullets.
-- Give practical, age appropriate next steps: tell a trusted adult, keep evidence (screenshots with dates), stay with friends, block and report online.
-- You can explain the Anti-bully Act 2026: for bullying at school, complain to the school's anti bully committee first; if they take no action or handle it badly, the family can go to the Tribunal for Anti-bully (free, private, at tab.bheuu.gov.my). Children bullied outside school can go to the Tribunal directly. Only the victim or a parent or guardian can file. Mention the Case file feature in the app, which builds the paperwork.
-- Reply in the user's language (Malay or English).
+COUNSELLOR_PROMPT = f"""You are Berani Counsellor in a Malaysian anti bullying app used mostly by school students aged 10 to 18, and sometimes their parents. You are warm, steady and practical. Your job is to make sure the person gets real help from real people, not just sympathy.
 
-Safety rules (always):
-- If there is any sign of immediate danger, weapons, sexual assault, or suicide or self harm: put safety first. Say clearly to call 999 or go to a trusted adult now. For suicide or self harm thoughts also give Befrienders 03-7627 2929 (24/7) and Talian Kasih 15999.
-- For sexual assault: the nearest hospital emergency department has a One Stop Crisis Centre (OSCC). Do not give graphic detail.
-- You are not a doctor, lawyer or emergency service. Never diagnose. Never promise outcomes. Never claim Berani will contact anyone or investigate.
+Every reply MUST follow this structure, in plain text (no markdown, no asterisks, no headings):
+
+1. Acknowledge in one or two sentences. Name it plainly when it is bullying ("What they did is bullying, and it is not your fault.").
+2. Safety. If anyone was hit, slapped, pushed, touched sexually, threatened, or something was put on or in their body or clothes: ask "Are you safe right now? Are you hurt?" If hurt, tell them to see a doctor today, and for serious injury or anything sexual to go to {OSCC}. If in danger now: call 999.
+3. A numbered action plan of 3 or 4 specific steps, for example:
+   - Tell a trusted adult today: a parent, the class teacher or the school counsellor. Suggest the exact words to use ("I need help. Someone at school ... ").
+   - Write it down while it is fresh: date, time, place, who did it, who saw. Keep screenshots. Use Berani's "Record what happened".
+   - For bullying at school: make a written complaint to the school's anti-bully committee (every school must have one under the Anti-bully Act 2026). If the school does nothing or handles it badly, the student or a parent can go to the {TRIBUNAL}. If it happened outside school, a child can go to the Tribunal directly.
+   - For assault, sexual harassment, threats or demands for money: a police report can be made too.
+4. End with: "If you need to talk to someone now, call {TALIAN_KASIH}." Then one short, caring question to keep the conversation going.
+
+Other rules:
+- Be specific and concrete. Never give a vague or one-line answer.
+- Any mention of suicide, self harm, wanting to die or disappear: stop the plan. Say clearly that their life matters, urge them to call {BEFRIENDERS} or {TALIAN_KASIH} now, or 999 if they might act on it, and to stay with a trusted adult.
+- Reply in the user's language (Bahasa Melayu or English). Keep it readable on a phone: about 120 to 200 words.
+- You are an AI, not a doctor, lawyer or emergency service. Never diagnose, never promise outcomes, never claim Berani will contact anyone.
 - Do not ask for full names, addresses or school names of other children.
-- Stay on the topic of safety, bullying, wellbeing and next steps. Politely decline unrelated tasks (homework, coding, essays).
-- Plain text only: no markdown headings, no asterisks."""
+- Stay on safety, bullying, wellbeing and next steps. Politely decline unrelated tasks."""
+
+
+def _has(t: str, words: list[str]) -> bool:
+    import re
+    return any(re.search(r"(^|[^a-z])" + re.escape(w.rstrip("~")) + ("" if w.endswith("~") else r"(?![a-z])"), t) for w in words)
+
+
+SELF_HARM = ["kill myself", "end my life", "want to die", "wanna die", "suicid~", "self harm", "self-harm", "hurt myself",
+             "cut myself", "disappear forever", "bunuh diri", "nak mati", "mahu mati", "ingin mati", "tak nak hidup", "cederakan diri"]
+DANGER = ["kill you", "kill me", "knife", "gun", "weapon", "stab~", "follow me home", "followed me home",
+          "bunuh", "pisau", "parang", "senjata", "tikam", "ikut saya balik"]
+SEXUAL = ["rape~", "molest~", "touched me", "touch me", "private part~", "naked", "nude~", "sexual~", "pants", "underwear",
+          "rogol", "cabul", "raba", "bogel", "seluar dalam", "gangguan seksual"]
+PHYSICAL = ["slap~", "hit me", "hits me", "punch~", "kick~", "push~", "pushed", "beat~", "hurt me", "injur~", "bleed~", "bruise~",
+            "choke~", "ants", "threw", "spit~", "tampar", "pukul", "tumbuk", "tendang", "tolak", "cedera", "lebam", "berdarah", "ludah", "semut"]
+SCHOOL = ["school", "class", "classmate~", "teacher", "student", "hostel", "asrama", "recess", "canteen", "senior~", "form ",
+          "sekolah", "kelas", "cikgu", "guru", "murid", "pelajar", "rehat", "kantin", "bully~", "buli"]
+
+
+def screen(text: str) -> dict:
+    t = f" {(text or '').lower()} "
+    return {
+        "selfHarm": _has(t, SELF_HARM),
+        "danger": _has(t, DANGER),
+        "sexual": _has(t, SEXUAL),
+        "physical": _has(t, PHYSICAL),
+        "school": _has(t, SCHOOL),
+    }
+
+
+def enforce(reply: str, flags: dict) -> str:
+    """Deterministic floor: whatever the model wrote, these lines are always present."""
+    out = reply.strip()
+    low = out.lower()
+    head = []
+    if (flags["danger"] or flags["selfHarm"]) and "999" not in low:
+        head.append("If you are in danger right now, call 999 or go to a trusted adult immediately.")
+    if flags["selfHarm"] and "befrienders" not in low:
+        head.append(f"Your life matters. Please call {BEFRIENDERS} or {TALIAN_KASIH} now.")
+    tail = []
+    if (flags["physical"] or flags["sexual"] or flags["danger"]) and "oscc" not in low and "one stop crisis" not in low:
+        tail.append(f"If you are hurt, see a doctor today. For serious injury or anything sexual, go to {OSCC}.")
+    if not flags["selfHarm"] and "tribunal" not in low:
+        tail.append(f"If the school does not act, you or your parent can go to the {TRIBUNAL}.")
+    if "15999" not in low:
+        tail.append(f"If you need to talk to someone now, call {TALIAN_KASIH}.")
+    return "\n\n".join([*head, out, *tail]).strip()
 
 
 @bp.post("/chat")
@@ -201,13 +258,17 @@ def chat():
     if not clean or clean[-1]["role"] != "user":
         return jsonify({"error": "empty"}), 400
 
+    # Flags come from everything the user has said, so earlier risks are not forgotten.
+    flags = screen(" ".join(m["content"] for m in clean if m["role"] == "user"))
+
     if ai.provider() is None:
-        return jsonify({"error": "ai_unavailable"}), 503
+        return jsonify({"error": "ai_unavailable", "flags": flags}), 503
     try:
-        return jsonify({"reply": ai.chat(COUNSELLOR_PROMPT, clean, max_tokens=450, temperature=0.5)})
+        reply = ai.chat(COUNSELLOR_PROMPT, clean, max_tokens=700, temperature=0.4)
+        return jsonify({"reply": enforce(reply, flags), "flags": flags})
     except Exception as e:
         print("v2 chat error:", type(e).__name__)
-        return jsonify({"error": "chat_failed"}), 502
+        return jsonify({"error": "chat_failed", "flags": flags}), 502
 
 
 @bp.get("/health")
