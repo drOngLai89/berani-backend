@@ -7,42 +7,26 @@ app version currently in the stores keeps working.
 Design rules:
 - Stateless. Nothing a user sends is stored or logged (only sizes and error types).
 - The system prompt lives here, never on the client, so the endpoint cannot be
-  turned into a general purpose chatbot on our OpenAI key.
+  turned into a general purpose chatbot on our AI key.
 - Hard caps on payload size, message count and request rate.
 """
 from __future__ import annotations
 
-import json
-import os
 import threading
 import time
 from collections import defaultdict, deque
 
 from flask import Blueprint, jsonify, request
 
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover
-    OpenAI = None
+import ai
 
 bp = Blueprint("v2", __name__, url_prefix="/v2")
 
-MODEL = os.getenv("BERANI_MODEL", "gpt-4o-mini")
 MAX_TEXT = 6000            # chars of incident text
 MAX_IMAGES = 3
 MAX_IMAGE_B64 = 1_500_000  # ~1.1 MB per image after base64
 MAX_CHAT_MESSAGES = 30
 MAX_CHAT_CHARS = 2000      # per message
-
-_client = None
-
-
-def client():
-    global _client
-    if _client is None and OpenAI is not None and os.getenv("OPENAI_API_KEY"):
-        _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=45)
-    return _client
-
 
 # ---------------------------------------------------------------- rate limiting
 _hits: dict[tuple[str, str], deque] = defaultdict(deque)
@@ -80,9 +64,6 @@ HARMS = ["physical", "psychological", "social"]
 SEVERITY = ["low", "moderate", "high", "critical"]
 
 ANALYSIS_SCHEMA = {
-    "name": "incident_analysis",
-    "strict": True,
-    "schema": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
@@ -101,7 +82,6 @@ ANALYSIS_SCHEMA = {
             "severity", "forms", "harms", "possibleCrime", "crimeNotes",
             "selfHarmRisk", "summary", "evidenceNotes", "missing", "nextStep",
         ],
-    },
 }
 
 ANALYSIS_PROMPT = """You help young people in Malaysia record bullying clearly. You are not a lawyer and you never decide guilt.
@@ -169,29 +149,13 @@ def analyse():
     ):
         return jsonify({"error": "images_too_large"}), 413
 
-    c = client()
-    if c is None:
+    if ai.provider() is None:
         return jsonify({"error": "ai_unavailable"}), 503
 
-    content = [{"type": "text", "text": f"Incident date: {str(data.get('date') or 'not given')[:20]}\n\nDescription:\n{text or '(no text, see images)'}"}]
-    for b64 in images:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
-        })
-
+    prompt = f"Incident date: {str(data.get('date') or 'not given')[:20]}\n\nDescription:\n{text or '(no text, see images)'}"
     try:
-        resp = c.chat.completions.create(
-            model=MODEL,
-            temperature=0.2,
-            response_format={"type": "json_schema", "json_schema": ANALYSIS_SCHEMA},
-            messages=[
-                {"role": "system", "content": ANALYSIS_PROMPT},
-                {"role": "user", "content": content},
-            ],
-        )
-        raw = resp.choices[0].message.content or "{}"
-        return jsonify({"analysis": _validate_analysis(json.loads(raw))})
+        raw = ai.structured(ANALYSIS_PROMPT, prompt, images, "incident_analysis", ANALYSIS_SCHEMA)
+        return jsonify({"analysis": _validate_analysis(raw)})
     except Exception as e:  # never log user content
         print("v2 analyse error:", type(e).__name__)
         return jsonify({"error": "analysis_failed"}), 502
@@ -237,17 +201,10 @@ def chat():
     if not clean or clean[-1]["role"] != "user":
         return jsonify({"error": "empty"}), 400
 
-    c = client()
-    if c is None:
+    if ai.provider() is None:
         return jsonify({"error": "ai_unavailable"}), 503
     try:
-        resp = c.chat.completions.create(
-            model=MODEL,
-            temperature=0.5,
-            max_tokens=450,
-            messages=[{"role": "system", "content": COUNSELLOR_PROMPT}] + clean,
-        )
-        return jsonify({"reply": (resp.choices[0].message.content or "").strip()})
+        return jsonify({"reply": ai.chat(COUNSELLOR_PROMPT, clean, max_tokens=450, temperature=0.5)})
     except Exception as e:
         print("v2 chat error:", type(e).__name__)
         return jsonify({"error": "chat_failed"}), 502
@@ -255,4 +212,4 @@ def chat():
 
 @bp.get("/health")
 def health():
-    return jsonify({"ok": True, "version": 2, "ai": client() is not None})
+    return jsonify({"ok": True, "version": 2, "ai": ai.provider()})
