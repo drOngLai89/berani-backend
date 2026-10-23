@@ -7,7 +7,11 @@ except Exception:
     OpenAI = None
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 6 * 1024 * 1024
 CORS(app)
+
+from v2 import bp as v2_bp  # noqa: E402
+app.register_blueprint(v2_bp)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY) if (OpenAI and OPENAI_API_KEY) else None
