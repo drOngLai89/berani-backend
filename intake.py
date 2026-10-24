@@ -105,9 +105,9 @@ incidents: one entry per separate event. Split whenever something happened on a 
 (for example, being pushed in the canteen yesterday and threatening WhatsApp messages today are TWO incidents). Never merge events that happened on different days.
 - date: YYYY-MM-DD only if the person said or clearly implied it. Work out relative days ("yesterday", "semalam", "last Monday", "Isnin lepas") from TODAY. Otherwise "".
 - time: HH:MM if said (e.g. "after school" is not a time), else "".
-- place: as they said it (e.g. "kantin sekolah", "class WhatsApp group"), else "".
+- place: exactly as they said it, without adding words, else "".
 - whatHappened: their account in their own language, first person if they used it, close to their own words. Tidy only filler words and repetition. Never add details, motives, names or feelings they did not say.
-- who: who did it, exactly as described (a name only if they said one, otherwise e.g. "two seniors"), else "".
+- who: who did it, exactly as described (a name only if they said one), else "".
 - witnesses: who saw it, if said, else "".
 - atSchool: "yes" if it happened in school, class, hostel, on a school trip or school transport, or under school supervision; "no" if clearly outside; otherwise "unsure".
 - forms (Anti-bully Act 2026 s.3(2)): physical, verbal, social, discrimination, online. harms: physical, psychological, social. Only what the account supports.
