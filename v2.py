@@ -19,6 +19,7 @@ from collections import defaultdict, deque
 from flask import Blueprint, jsonify, request
 
 import ai
+import tab
 
 bp = Blueprint("v2", __name__, url_prefix="/v2")
 
@@ -186,7 +187,15 @@ Other rules:
 - Reply in the user's language (Bahasa Melayu or English). Keep it readable on a phone: about 120 to 200 words.
 - You are an AI, not a doctor, lawyer or emergency service. Never diagnose, never promise outcomes, never claim Berani will contact anyone.
 - Do not ask for full names, addresses or school names of other children.
-- Stay on safety, bullying, wellbeing and next steps. Politely decline unrelated tasks."""
+- Stay on safety, bullying, wellbeing and next steps. Politely decline unrelated tasks.
+
+The Tribunal is the authority on its own process, not you:
+- For facts about the Tribunal, use ONLY the TRIBUNAL FACTS below, and say they come from the Tribunal's website.
+- Never decide or predict whether a case qualifies, what the Tribunal will decide, deadlines, compensation, or a complaint's status, and never give legal advice. For any of these, say this is a question for the Tribunal itself, and suggest asking through Tanya Kami ({tab.LINKS['askUs']}), which replies within 3 working days, or calling {tab.PHONE}. Offer to help them word the question, without names or IC numbers.
+- Berani helps them prepare: record what happened and get Borang 1 ready. They report on the official portal, tab.bheuu.gov.my.
+
+TRIBUNAL FACTS (from tab.bheuu.gov.my):
+{tab.facts_block()}"""
 
 
 def _has(t: str, words: list[str]) -> bool:
@@ -202,6 +211,10 @@ SEXUAL = ["rape~", "molest~", "touched me", "touch me", "private part~", "naked"
           "rogol", "cabul", "raba", "bogel", "seluar dalam", "gangguan seksual"]
 PHYSICAL = ["slap~", "hit me", "hits me", "punch~", "kick~", "push~", "pushed", "beat~", "hurt me", "injur~", "bleed~", "bruise~",
             "choke~", "ants", "threw", "spit~", "tampar", "pukul", "tumbuk", "tendang", "tolak", "cedera", "lebam", "berdarah", "ludah", "semut"]
+OFFICIAL = ["eligible", "qualify", "qualif~", "layak", "deadline", "tarikh akhir", "how long", "berapa lama", "status",
+            "compensation", "pampasan", "ganti rugi", "lawyer", "peguam", "sue", "saman", "court", "mahkamah", "hearing",
+            "perbicaraan", "decision", "keputusan", "appeal", "rayuan", "legal", "undang-undang", "outcome", "e-tab", "etab",
+            "borang", "lampiran", "can i file", "can i report to the tribunal", "boleh failkan", "boleh adu"]
 SCHOOL = ["school", "class", "classmate~", "teacher", "student", "hostel", "asrama", "recess", "canteen", "senior~", "form ",
           "sekolah", "kelas", "cikgu", "guru", "murid", "pelajar", "rehat", "kantin", "bully~", "buli"]
 
@@ -214,6 +227,7 @@ def screen(text: str) -> dict:
         "sexual": _has(t, SEXUAL),
         "physical": _has(t, PHYSICAL),
         "school": _has(t, SCHOOL),
+        "official": _has(t, OFFICIAL),
     }
 
 
@@ -229,7 +243,10 @@ def enforce(reply: str, flags: dict) -> str:
     tail = []
     if (flags["physical"] or flags["sexual"] or flags["danger"]) and "oscc" not in low and "one stop crisis" not in low:
         tail.append(f"If you are hurt, see a doctor today. For serious injury or anything sexual, go to {OSCC}.")
-    if not flags["selfHarm"] and "tribunal" not in low:
+    if flags.get("official") and not flags["selfHarm"]:
+        if "tanya-kami" not in low and "tanya kami" not in low:
+            tail.append(f"For an official answer, ask the Tribunal itself: Tanya Kami at {tab.LINKS['askUs']} (they reply within 3 working days) or call {tab.PHONE}.")
+    elif not flags["selfHarm"] and "tribunal" not in low:
         tail.append(f"If the school does not act, you or your parent can go to the {TRIBUNAL}.")
     if "15999" not in low:
         tail.append(f"If you need to talk to someone now, call {TALIAN_KASIH}.")

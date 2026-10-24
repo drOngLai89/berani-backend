@@ -43,6 +43,32 @@ def _openai_client():
     return _openai
 
 
+TRANSCRIBE_MODEL = os.getenv("BERANI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+TRANSCRIBE_HINT = (
+    "A Malaysian student or parent describing bullying, in Bahasa Melayu, English or a mix. "
+    "Words that may appear: sekolah, cikgu, kelas, asrama, kantin, rehat, buli, tampar, tumbuk, ejek, "
+    "WhatsApp, TikTok, Instagram, Tribunal, Talian Kasih."
+)
+
+
+def can_transcribe() -> bool:
+    return bool(os.getenv("OPENAI_API_KEY"))
+
+
+def transcribe(audio: bytes, filename: str, mime: str) -> str:
+    """Speech to text with OpenAI (also used when Claude does the writing). Audio is not stored."""
+    if not can_transcribe():
+        raise AIUnavailable()
+    client = _openai_client()
+    try:
+        r = client.audio.transcriptions.create(model=TRANSCRIBE_MODEL, file=(filename, audio, mime), prompt=TRANSCRIBE_HINT)
+    except Exception as e:  # older accounts: fall back to Whisper
+        if "model" not in str(e).lower():
+            raise
+        r = client.audio.transcriptions.create(model="whisper-1", file=(filename, audio, mime), prompt=TRANSCRIBE_HINT)
+    return (getattr(r, "text", "") or "").strip()
+
+
 def normalise(messages: list[dict]) -> list[dict]:
     """Starts with a user turn and alternates roles (merging repeats), as the Messages API expects."""
     out: list[dict] = []
@@ -74,7 +100,7 @@ def chat(system: str, messages: list[dict], max_tokens: int = 450, temperature: 
     raise AIUnavailable()
 
 
-def structured(system: str, text: str, images_b64: list[str], name: str, schema: dict) -> dict:
+def structured(system: str, text: str, images_b64: list[str], name: str, schema: dict, max_tokens: int = 1200) -> dict:
     """One user turn (text + JPEG images) -> JSON object matching `schema`."""
     p = provider()
     if p == "anthropic":
@@ -82,7 +108,7 @@ def structured(system: str, text: str, images_b64: list[str], name: str, schema:
         content.append({"type": "text", "text": text})
         r = _anthropic_client().messages.create(
             model=ANTHROPIC_MODEL,
-            max_tokens=1200,
+            max_tokens=max_tokens,
             temperature=0.2,
             system=system,
             tools=[{"name": name, "description": "Record the structured analysis.", "input_schema": schema}],

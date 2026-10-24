@@ -8,6 +8,7 @@ app.config["MAX_CONTENT_LENGTH"] = 6 * 1024 * 1024
 CORS(app)
 
 from v2 import bp as v2_bp  # noqa: E402
+import intake  # noqa: E402,F401  (adds /v2/transcribe, /v2/intake, /v2/borang, /v2/config)
 app.register_blueprint(v2_bp)
 
 
