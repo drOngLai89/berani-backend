@@ -214,7 +214,7 @@ BORANG_SCHEMA = {
 
 BORANG_PROMPT = """You draft two parts of Borang 1 (Aduan Buli), the complaint form of Malaysia's Tribunal for Anti-bully, from records the complainant has already confirmed. The complainant will read and edit your draft before using it.
 
-facts ("Fakta-fakta buli"): the incidents in date order, as numbered short paragraphs. Each: date (and time if known), place, what happened, who did it and who saw it, exactly as recorded. Plain, calm, factual sentences. Written by the complainant: first person ("Saya" / "I") if the victim is filing; if a parent or guardian is filing, refer to "anak saya" / "my child". Add nothing that is not in the records: no motives, opinions, legal conclusions, or guesses. Where a detail is missing, leave it out; do not write "unknown".
+facts ("Fakta-fakta buli"): the incidents in date order, as numbered short paragraphs, each on its own line. Each: date (and time if known), place, what happened, who did it and who saw it, exactly as recorded. Plain, calm, factual sentences. Written by the complainant: first person ("Saya" / "I") if the victim is filing; if a parent or guardian is filing, refer to "anak saya" / "my child". Add nothing that is not in the records: no motives, opinions, legal conclusions, or guesses. Where a detail is missing, leave it out; do not write "unknown".
 nature ("Sifat perbuatan buli"): one short phrase naming the kinds of bullying in the records (physical, verbal, social, discrimination, online/cyber) and the harm (physical, psychological, social).
 
 Write both in the requested language. No markdown."""
@@ -247,4 +247,21 @@ def borang():
     except Exception as e:
         print("v2 borang error:", type(e).__name__)
         return jsonify({"error": "borang_failed"}), 502
-    return jsonify({"facts": str(raw.get("facts") or "")[:8000], "nature": str(raw.get("nature") or "")[:300]})
+    return jsonify({"facts": _paragraphs(str(raw.get("facts") or ""))[:8000], "nature": _nature(incidents, data.get("language") == "ms")})
+
+
+_FORM_MS = {"physical": "fizikal", "verbal": "lisan", "social": "sosial", "discrimination": "diskriminasi", "online": "siber"}
+
+
+def _nature(incidents: list, ms: bool) -> str:
+    """Kinds of bullying from the confirmed records, in a fixed order and the right language (not left to the model)."""
+    present = {f for i in incidents if isinstance(i, dict) for f in (i.get("forms") or [])}
+    forms = [f for f in FORMS if f in present]
+    if not forms:
+        return ""
+    return "Buli " + ", ".join(_FORM_MS[f] for f in forms) if ms else ", ".join(f.capitalize() for f in forms) + " bullying"
+
+
+def _paragraphs(t: str) -> str:
+    """One numbered paragraph per line."""
+    return re.sub(r"\s+(?=(?:[2-9]|1[0-9])\. )", "\n\n", t.strip())

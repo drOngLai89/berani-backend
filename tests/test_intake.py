@@ -26,13 +26,16 @@ class FakeTool:
 
 
 class FakeAudio:
-    def __init__(self, text="semalam dua senior tampar saya kat asrama"):
-        self.calls, self.text = [], text
+    def __init__(self, segments=None):
+        self.calls = []
+        self.segments = segments if segments is not None else [
+            {"text": "semalam dua senior tampar saya kat asrama", "no_speech_prob": 0.02, "avg_logprob": -0.2},
+        ]
         self.audio = SimpleNamespace(transcriptions=self)
 
     def create(self, **kw):
         self.calls.append(kw)
-        return SimpleNamespace(text=self.text)
+        return SimpleNamespace(text=" ".join(s["text"] for s in self.segments), segments=self.segments)
 
 
 def setup(monkeypatch, tool_input=None, audio=None):
@@ -66,6 +69,18 @@ def test_transcribe(monkeypatch):
     assert body["flags"]["physical"] and body["flags"]["school"]
     name, data, mime = fake.calls[0]["file"]
     assert name == "voice.m4a" and data == b"\x00fake-audio" and mime == "audio/m4a"
+    assert "prompt" not in fake.calls[0] and fake.calls[0]["response_format"] == "verbose_json"
+
+
+def test_transcribe_drops_non_speech(monkeypatch):
+    fake = FakeAudio([
+        {"text": "Saya sering melihat kes buli di sekolah.", "no_speech_prob": 0.92, "avg_logprob": -0.4},
+        {"text": "dia tolak saya", "no_speech_prob": 0.05, "avg_logprob": -0.3},
+        {"text": "mumble", "no_speech_prob": 0.1, "avg_logprob": -1.8},
+    ])
+    setup(monkeypatch, audio=fake)
+    body = app.post("/v2/transcribe", json={"audio": base64.b64encode(b"x").decode(), "mime": "audio/wav"}).get_json()
+    assert body["text"] == "dia tolak saya"
 
 
 def test_transcribe_limits(monkeypatch):
@@ -122,7 +137,7 @@ def test_borang(monkeypatch):
     setup(monkeypatch, tool_input={})
     monkeypatch.setattr(ai, "_anthropic", fake)
     r = app.post("/v2/borang", json={"language": "ms", "filer": "parent", "incidents": [{"date": "2026-10-23", "whatHappened": "ditampar"}]})
-    assert r.get_json() == {"facts": "1. Pada 23 Oktober 2026 ...", "nature": "Buli fizikal"}
+    assert r.get_json() == {"facts": "1. Pada 23 Oktober 2026 ...", "nature": ""}
     prompt = fake.calls[0]["messages"][0]["content"][-1]["text"]
     assert "Bahasa Melayu" in prompt and "parent" in prompt and "ditampar" in prompt
     assert app.post("/v2/borang", json={"incidents": []}).status_code == 400
@@ -160,3 +175,13 @@ def test_questions_already_answered_are_dropped(monkeypatch):
     setup(monkeypatch, tool_input=data)
     body = app.post("/v2/intake", json={"text": "semalam senior tampar saya kat asrama", "today": "2026-10-24"}).get_json()
     assert body["questions"] == ["Ada simpan tangkapan skrin?"]
+
+
+def test_borang_nature_and_paragraphs_are_deterministic(monkeypatch):
+    fake = FakeTool({"facts": "1. Pada 23 Okt di kantin. 2. Pada 24 Okt di WhatsApp.", "nature": "physical, online"})
+    setup(monkeypatch, tool_input={})
+    monkeypatch.setattr(ai, "_anthropic", fake)
+    body = app.post("/v2/borang", json={"language": "ms", "incidents": [
+        {"date": "2026-10-23", "whatHappened": "a", "forms": ["online", "physical"]}]}).get_json()
+    assert body["nature"] == "Buli fizikal, siber"
+    assert body["facts"] == "1. Pada 23 Okt di kantin.\n\n2. Pada 24 Okt di WhatsApp."

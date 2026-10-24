@@ -43,30 +43,38 @@ def _openai_client():
     return _openai
 
 
-TRANSCRIBE_MODEL = os.getenv("BERANI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
-TRANSCRIBE_HINT = (
-    "A Malaysian student or parent describing bullying, in Bahasa Melayu, English or a mix. "
-    "Words that may appear: sekolah, cikgu, kelas, asrama, kantin, rehat, buli, tampar, tumbuk, ejek, "
-    "WhatsApp, TikTok, Instagram, Tribunal, Talian Kasih."
-)
+TRANSCRIBE_MODEL = os.getenv("BERANI_TRANSCRIBE_MODEL", "whisper-1")
+# Segments Whisper itself rates as probably not speech, or very low confidence, are dropped:
+# silence and noise must never turn into words in someone's complaint.
+NO_SPEECH_MAX = 0.5
+LOGPROB_MIN = -1.0
 
 
 def can_transcribe() -> bool:
     return bool(os.getenv("OPENAI_API_KEY"))
 
 
+def keep_segments(segments: list) -> str:
+    out = []
+    for seg in segments or []:
+        get = (lambda k: seg.get(k)) if isinstance(seg, dict) else (lambda k: getattr(seg, k, None))
+        nsp, lp, text = get("no_speech_prob") or 0.0, get("avg_logprob") or 0.0, (get("text") or "").strip()
+        if text and nsp <= NO_SPEECH_MAX and lp >= LOGPROB_MIN:
+            out.append(text)
+    return " ".join(out).strip()
+
+
 def transcribe(audio: bytes, filename: str, mime: str) -> str:
-    """Speech to text with OpenAI (also used when Claude does the writing). Audio is not stored."""
+    """Speech to text with OpenAI Whisper. No prompt (a prompt can be "heard" in silence). Audio is not stored."""
     if not can_transcribe():
         raise AIUnavailable()
-    client = _openai_client()
-    try:
-        r = client.audio.transcriptions.create(model=TRANSCRIBE_MODEL, file=(filename, audio, mime), prompt=TRANSCRIBE_HINT)
-    except Exception as e:  # older accounts: fall back to Whisper
-        if "model" not in str(e).lower():
-            raise
-        r = client.audio.transcriptions.create(model="whisper-1", file=(filename, audio, mime), prompt=TRANSCRIBE_HINT)
-    return (getattr(r, "text", "") or "").strip()
+    r = _openai_client().audio.transcriptions.create(
+        model=TRANSCRIBE_MODEL, file=(filename, audio, mime), response_format="verbose_json", temperature=0,
+    )
+    segments = getattr(r, "segments", None)
+    if segments is None and isinstance(r, dict):
+        segments = r.get("segments")
+    return keep_segments(segments or [])
 
 
 def normalise(messages: list[dict]) -> list[dict]:
