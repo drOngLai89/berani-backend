@@ -101,7 +101,8 @@ INTAKE_PROMPT = """You help a Malaysian student or parent turn what they said ab
 
 Return JSON only.
 
-incidents: one entry per separate event (a different day or a clearly separate happening). Usually one.
+incidents: one entry per separate event. Split whenever something happened on a different day, in a different place, or in a different way
+(for example, being pushed in the canteen yesterday and threatening WhatsApp messages today are TWO incidents). Never merge events that happened on different days.
 - date: YYYY-MM-DD only if the person said or clearly implied it. Work out relative days ("yesterday", "semalam", "last Monday", "Isnin lepas") from TODAY. Otherwise "".
 - time: HH:MM if said (e.g. "after school" is not a time), else "".
 - place: as they said it (e.g. "kantin sekolah", "class WhatsApp group"), else "".
@@ -110,9 +111,9 @@ incidents: one entry per separate event (a different day or a clearly separate h
 - witnesses: who saw it, if said, else "".
 - atSchool: "yes" if it happened in school, class, hostel, on a school trip or school transport, or under school supervision; "no" if clearly outside; otherwise "unsure".
 - forms (Anti-bully Act 2026 s.3(2)): physical, verbal, social, discrimination, online. harms: physical, psychological, social. Only what the account supports.
-- evidence: anything they say they have (screenshots, photos, videos, witnesses, police report), else "".
+- evidence: things they say they have kept or can show (screenshots, photos, videos, messages, a police report), else "". People are witnesses, not evidence.
 unsure: short labels for anything you had to guess (e.g. "date of the first incident").
-questions: up to 3 short, gentle questions, in their language, for the most important missing pieces, in this order of importance: when it happened, where, whether it was at school, who saw it. Empty if nothing important is missing.
+questions: up to 3 short, gentle questions, in their language, ONLY about details that are still empty in your incidents, in this order of importance: when it happened, where, whether it was at school, who saw it, whether they kept screenshots. Never ask about something they already told you. Empty if nothing important is missing.
 severity: low, moderate, high, or critical (danger now or soon: weapons, threats to kill or seriously hurt, sexual assault, being followed, or any sign of suicide or self harm).
 selfHarmRisk: true only if they suggest they may hurt themselves or end their life.
 possibleCrime: true if it may involve assault, sexual harassment or assault, criminal intimidation, extortion, sharing intimate images, or stalking."""
@@ -137,6 +138,31 @@ def _clean_incident(d: dict, today: str) -> dict:
         "harms": [h for h in d.get("harms", []) if h in HARMS],
         "evidence": str(d.get("evidence") or "")[:300],
     }
+
+
+_Q_TOPICS = {
+    "date": ("bila", "when", "tarikh", "date", "hari apa", "which day"),
+    "place": ("di mana", "mana", "where", "tempat", "place"),
+    "witnesses": ("nampak", "saw", "saksi", "witness", "siapa lagi", "who else"),
+    "atSchool": ("sekolah", "school"),
+}
+
+
+def _useful_questions(questions: list[str], incidents: list[dict]) -> list[str]:
+    """Drop questions about details every incident already has, so nobody is asked twice."""
+    answered = {
+        "date": all(i["date"] for i in incidents),
+        "place": all(i["place"] for i in incidents),
+        "witnesses": all(i["witnesses"] for i in incidents),
+        "atSchool": all(i["atSchool"] != "unsure" for i in incidents),
+    }
+    keep = []
+    for q in questions:
+        low = q.lower()
+        if any(answered[t] and any(w in low for w in words) for t, words in _Q_TOPICS.items()):
+            continue
+        keep.append(q)
+    return keep
 
 
 @bp.post("/intake")
@@ -165,8 +191,8 @@ def intake():
         incidents = [_clean_incident({"whatHappened": text}, today)]
     out = {
         "incidents": incidents,
+        "questions": _useful_questions([str(q)[:160] for q in raw.get("questions", [])], incidents)[:3],
         "unsure": [str(u)[:80] for u in raw.get("unsure", [])][:6],
-        "questions": [str(q)[:160] for q in raw.get("questions", [])][:3],
         "severity": raw.get("severity") if raw.get("severity") in SEVERITY else "moderate",
         "selfHarmRisk": bool(raw.get("selfHarmRisk")) or flags["selfHarm"],
         "possibleCrime": bool(raw.get("possibleCrime")),

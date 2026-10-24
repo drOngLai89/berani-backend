@@ -152,3 +152,11 @@ def test_official_questions_go_to_tanya_kami(monkeypatch):
 def test_tab_facts_are_sourced():
     assert all(isinstance(f, str) and f for f in tab.TAB_FACTS)
     assert tab.LINKS["startComplaint"] == "https://tab.bheuu.gov.my/aduan/mula"
+
+
+def test_questions_already_answered_are_dropped(monkeypatch):
+    data = {**INTAKE, "incidents": [{**INTAKE["incidents"][0], "atSchool": "yes", "witnesses": "Daniel"}],
+            "questions": ["Bila tepatnya kejadian itu berlaku?", "Di mana kejadian itu berlaku?", "Siapa lagi yang nampak?", "Ada simpan tangkapan skrin?"]}
+    setup(monkeypatch, tool_input=data)
+    body = app.post("/v2/intake", json={"text": "semalam senior tampar saya kat asrama", "today": "2026-10-24"}).get_json()
+    assert body["questions"] == ["Ada simpan tangkapan skrin?"]
