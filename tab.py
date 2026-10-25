@@ -15,6 +15,8 @@ import os
 SITE = "https://tab.bheuu.gov.my"
 LINKS = {
     "portal": SITE,
+    # BAYU, BHEUU's AI assistant, as embedded on the Tribunal portal. Override with TAB_BAYU_URL if it moves.
+    "bayu": os.environ.get("TAB_BAYU_URL", "https://bheuu.catzai.my/embed"),
     "startComplaint": f"{SITE}/aduan/mula",
     "checkStatus": f"{SITE}/aduan/status",
     "askUs": f"{SITE}/tanya-kami",
