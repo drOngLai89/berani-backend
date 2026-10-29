@@ -58,7 +58,8 @@ def transcribe():
     if not ai.can_transcribe():
         return jsonify({"error": "ai_unavailable"}), 503
     try:
-        text = ai.transcribe(audio, f"voice.{AUDIO_TYPES[mime]}", mime)
+        lang = data.get("language") if data.get("language") in ("en", "ms") else None
+        text = ai.transcribe(audio, f"voice.{AUDIO_TYPES[mime]}", mime, lang)
     except Exception as e:  # never log content
         print("v2 transcribe error:", type(e).__name__)
         return jsonify({"error": "transcribe_failed"}), 502

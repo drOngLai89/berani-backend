@@ -185,3 +185,47 @@ def test_borang_nature_and_paragraphs_are_deterministic(monkeypatch):
         {"date": "2026-10-23", "whatHappened": "a", "forms": ["online", "physical"]}]}).get_json()
     assert body["nature"] == "Buli fizikal, siber"
     assert body["facts"] == "1. Pada 23 Okt di kantin.\n\n2. Pada 24 Okt di WhatsApp."
+
+
+class LangAudio:
+    """Whisper that guesses Malay for English speech and writes a (low confidence) translation."""
+    def __init__(self):
+        self.calls = []
+        self.audio = SimpleNamespace(transcriptions=self)
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        lang = kw.get("language")
+        if lang == "en":
+            segs = [{"text": "Yesterday two seniors pushed me in the canteen.", "no_speech_prob": 0.02, "avg_logprob": -0.15}]
+            return SimpleNamespace(language="english", segments=segs)
+        segs = [{"text": "Semalam dua senior menolak saya di kantin.", "no_speech_prob": 0.02, "avg_logprob": -0.85}]
+        return SimpleNamespace(language="malay", segments=segs)
+
+
+def test_transcribe_keeps_the_language_spoken(monkeypatch):
+    fake = LangAudio()
+    setup(monkeypatch, audio=fake)
+    body = app.post("/v2/transcribe", json={"audio": base64.b64encode(b"x").decode(), "mime": "audio/m4a"}).get_json()
+    assert body["text"].startswith("Yesterday two seniors")
+    assert [c.get("language") for c in fake.calls] == [None, "en"]
+
+
+def test_transcribe_keeps_malay_when_it_is_malay(monkeypatch):
+    class Malay(LangAudio):
+        def create(self, **kw):
+            self.calls.append(kw)
+            if kw.get("language") == "en":
+                return SimpleNamespace(language="english", segments=[{"text": "Yesterday two seniors pushed me.", "no_speech_prob": 0.02, "avg_logprob": -0.9}])
+            return SimpleNamespace(language="malay", segments=[{"text": "Semalam dua senior tolak saya.", "no_speech_prob": 0.02, "avg_logprob": -0.2}])
+    fake = Malay()
+    setup(monkeypatch, audio=fake)
+    body = app.post("/v2/transcribe", json={"audio": base64.b64encode(b"x").decode(), "mime": "audio/m4a"}).get_json()
+    assert body["text"] == "Semalam dua senior tolak saya."
+
+
+def test_transcribe_forced_language(monkeypatch):
+    fake = LangAudio()
+    setup(monkeypatch, audio=fake)
+    app.post("/v2/transcribe", json={"audio": base64.b64encode(b"x").decode(), "mime": "audio/m4a", "language": "en"})
+    assert [c.get("language") for c in fake.calls] == ["en"]

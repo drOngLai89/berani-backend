@@ -64,17 +64,66 @@ def keep_segments(segments: list) -> str:
     return " ".join(out).strip()
 
 
-def transcribe(audio: bytes, filename: str, mime: str) -> str:
-    """Speech to text with OpenAI Whisper. No prompt (a prompt can be "heard" in silence). Audio is not stored."""
-    if not can_transcribe():
-        raise AIUnavailable()
+def _seg_get(seg, k):
+    return seg.get(k) if isinstance(seg, dict) else getattr(seg, k, None)
+
+
+def _confidence(segments: list) -> float:
+    """Length-weighted mean avg_logprob of the segments kept: higher means Whisper is surer of the words."""
+    total, weight = 0.0, 0
+    for seg in segments or []:
+        text = (_seg_get(seg, "text") or "").strip()
+        if not text or (_seg_get(seg, "no_speech_prob") or 0.0) > NO_SPEECH_MAX:
+            continue
+        n = len(text)
+        total += (_seg_get(seg, "avg_logprob") or -5.0) * n
+        weight += n
+    return total / weight if weight else -99.0
+
+
+def _whisper(audio: bytes, filename: str, mime: str, language: str | None = None):
+    kw = {"language": language} if language else {}
     r = _openai_client().audio.transcriptions.create(
-        model=TRANSCRIBE_MODEL, file=(filename, audio, mime), response_format="verbose_json", temperature=0,
+        model=TRANSCRIBE_MODEL, file=(filename, audio, mime), response_format="verbose_json", temperature=0, **kw,
     )
     segments = getattr(r, "segments", None)
-    if segments is None and isinstance(r, dict):
-        segments = r.get("segments")
-    return keep_segments(segments or [])
+    lang = getattr(r, "language", None)
+    if isinstance(r, dict):
+        segments = r.get("segments", segments)
+        lang = r.get("language", lang)
+    return (lang or "").lower(), segments or []
+
+
+# Whisper guesses the language first. With Malaysian speakers it sometimes guesses Malay for
+# English (or English for Malay) and then writes a translation instead of what was said.
+# For these languages, also transcribe with each one forced and keep the most confident result:
+# a faithful transcript scores far higher than a translation.
+LOCAL_LANGS = {"english": "en", "en": "en", "malay": "ms", "ms": "ms", "indonesian": "id", "id": "id"}
+
+
+def transcribe(audio: bytes, filename: str, mime: str, language: str | None = None) -> str:
+    """Speech to text with OpenAI Whisper, in the language spoken. No prompt (a prompt can be "heard"
+    in silence). Audio is not stored. language: 'en' or 'ms' to force one, else detected."""
+    if not can_transcribe():
+        raise AIUnavailable()
+    if language in ("en", "ms"):
+        return keep_segments(_whisper(audio, filename, mime, language)[1])
+    detected, segments = _whisper(audio, filename, mime)
+    code = LOCAL_LANGS.get(detected)
+    if not code:
+        return keep_segments(segments)
+    best, best_score = segments, _confidence(segments)
+    for other in ("en", "ms"):
+        if other == code:
+            continue
+        try:
+            _, alt = _whisper(audio, filename, mime, other)
+        except Exception:  # noqa: BLE001 - the first transcript still stands
+            continue
+        score = _confidence(alt)
+        if score > best_score + 0.05:
+            best, best_score = alt, score
+    return keep_segments(best)
 
 
 def normalise(messages: list[dict]) -> list[dict]:
